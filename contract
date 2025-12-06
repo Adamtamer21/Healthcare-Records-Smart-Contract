@@ -1,0 +1,272 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract HealthcareRecords {
+
+    // -------------------------
+    //       DOCTOR TYPES
+    // -------------------------
+    enum DoctorType { Brain, Bone, Lung }  // 0=Brain, 1=Bone, 2=Lung
+
+    // Convert enum → string (added)
+    function doctorTypeToString(DoctorType dType) internal pure returns (string memory) {
+        if (dType == DoctorType.Brain) return "Brain";
+        if (dType == DoctorType.Bone) return "Bone";
+        if (dType == DoctorType.Lung) return "Lung";
+        return "Unknown";
+    }
+
+    // -------------------------
+    //       ROLE SYSTEM
+    // -------------------------
+    address private immutable developer;
+
+    mapping(address => bool) public isDoctor;
+    mapping(address => DoctorType) private doctorType;
+
+    // -------------------------
+    //       RECORD SYSTEM
+    // -------------------------
+    struct Record {
+        uint256 recordId;
+        address author;
+        string ipfsCid;
+        uint256 timestamp;
+        string metaHash;
+        DoctorType requiredType;
+    }
+
+    mapping(address => uint256) private recordCount;
+    mapping(address => mapping(uint256 => Record)) private patientRecords;
+
+    struct LogEntry { 
+        address patient;
+        uint256 recordId;
+        address author;
+        string ipfsCid;
+    }
+    LogEntry[] private globalLog;
+
+    // -------------------------
+    //         EVENTS
+    // -------------------------
+    event DoctorGranted(address indexed doctor, DoctorType indexed dType);
+    event DoctorRevoked(address indexed doctor);
+    event RecordAdded(address indexed patient, address indexed author, uint256 recordId, string ipfsCid);
+
+    // -------------------------
+    //        MODIFIERS
+    // -------------------------
+    modifier onlyDeveloper() {
+        require(msg.sender == developer, "Only developer");
+        _;
+    }
+
+    modifier onlyDoctor() {
+        require(isDoctor[msg.sender], "Only doctor");
+        _;
+    }
+
+    // -------------------------
+    //        CONSTRUCTOR
+    // -------------------------
+    constructor() {
+        developer = msg.sender;
+    }
+
+    // -------------------------
+    //         DOCTOR ROLE
+    // -------------------------
+    function grantDoctor(address _doctor, DoctorType _type) external onlyDeveloper {
+        require(_doctor != address(0), "Zero address");
+        require(!isDoctor[_doctor], "Already doctor");
+
+        isDoctor[_doctor] = true;
+        doctorType[_doctor] = _type;
+
+        emit DoctorGranted(_doctor, _type);
+    }
+
+    function revokeDoctor(address _doctor) external onlyDeveloper {
+        require(isDoctor[_doctor], "Not a doctor");
+
+        isDoctor[_doctor] = false;
+        emit DoctorRevoked(_doctor);
+    }
+
+    // Return caller address
+    function getuseraddrs() external view returns (address) {
+        return msg.sender;
+    }
+
+    // -------------------------
+    //        ADD RECORD
+    // -------------------------
+    function addRecord(
+        address _patient,
+        string calldata _ipfsCid,
+        string calldata _metaHash,
+        DoctorType _requiredType
+    ) external onlyDoctor {
+
+        require(_patient != address(0), "Invalid patient");
+
+        uint256 newId = recordCount[_patient];
+
+        patientRecords[_patient][newId] = Record({
+            recordId: newId,
+            author: msg.sender,
+            ipfsCid: _ipfsCid,
+            timestamp: block.timestamp,
+            metaHash: _metaHash,
+            requiredType: _requiredType
+        });
+
+        recordCount[_patient] = newId + 1;
+
+        globalLog.push(LogEntry({
+            patient: _patient,
+            recordId: newId,
+            author: msg.sender,
+            ipfsCid: _ipfsCid
+        }));
+
+        emit RecordAdded(_patient, msg.sender, newId, _ipfsCid);
+    }
+
+    function addSelfRecord(
+        string calldata _ipfsCid,
+        string calldata _metaHash,
+        DoctorType _requiredType
+    ) external {
+
+        uint256 newId = recordCount[msg.sender];
+
+        patientRecords[msg.sender][newId] = Record({
+            recordId: newId,
+            author: msg.sender,
+            ipfsCid: _ipfsCid,
+            timestamp: block.timestamp,
+            metaHash: _metaHash,
+            requiredType: _requiredType
+        });
+
+        recordCount[msg.sender] = newId + 1;
+
+        globalLog.push(LogEntry({
+            patient: msg.sender,
+            recordId: newId,
+            author: msg.sender,
+            ipfsCid: _ipfsCid
+        }));
+
+        emit RecordAdded(msg.sender, msg.sender, newId, _ipfsCid);
+    }
+
+    // -------------------------
+    //       VIEW FUNCTIONS
+    // -------------------------
+
+    function getRecordCount(address _patient) external view returns (uint256) {
+        return recordCount[_patient];
+    }
+
+    function getRecordIds(address _patient) external view returns (uint256[] memory) {
+        uint256 count = recordCount[_patient];
+        uint256[] memory ids = new uint256[](count);
+        for (uint256 i = 0; i < count; i++) {
+            ids[i] = i;
+        }
+        return ids;
+    }
+
+    // UPDATED to return string doctor type & string required type
+    function getRecord(address _patient, uint256 _recordId)
+        external
+        view
+        returns (
+            uint256 recordId,
+            address author,
+            string memory ipfsCid,
+            uint256 timestamp,
+            string memory metaHash,
+            string memory requiredType
+        )
+    {
+        require(_recordId < recordCount[_patient], "Record does not exist");
+
+        Record memory r = patientRecords[_patient][_recordId];
+
+        return (
+            r.recordId,
+            r.author,
+            r.ipfsCid,
+            r.timestamp,
+            r.metaHash,
+            doctorTypeToString(r.requiredType)
+        );
+    }
+
+    function getLastRecordId(address _patient) external view returns (uint256) {
+        uint256 cnt = recordCount[_patient];
+        require(cnt > 0, "No records");
+        return cnt - 1;
+    }
+
+    function getGlobalLogCount() external view returns (uint256) {
+        return globalLog.length;
+    }
+
+    function getGlobalLogEntry(uint256 _index)
+        external
+        view
+        returns (
+            uint256 idx,
+            address patient,
+            uint256 recordId,
+            address author,
+            string memory ipfsCid
+        )
+    {
+        require(_index < globalLog.length, "Log index OOB");
+        LogEntry storage e = globalLog[_index];
+        return (_index, e.patient, e.recordId, e.author, e.ipfsCid);
+    }
+
+    // UPDATED to return string[] doctor types instead of enum[]
+    function getAllRecordsForPatient(address _patient)
+        external
+        view
+        returns (
+            uint256[] memory ids,
+            address[] memory authors,
+            string[] memory ipfsCids,
+            uint256[] memory timestamps,
+            string[] memory metaHashes,
+            string[] memory requiredTypes
+        )
+    {
+        uint256 cnt = recordCount[_patient];
+
+        ids = new uint256[](cnt);
+        authors = new address[](cnt);
+        ipfsCids = new string[](cnt);
+        timestamps = new uint256[](cnt);
+        metaHashes = new string[](cnt);
+        requiredTypes = new string[](cnt);
+
+        for (uint256 i = 0; i < cnt; i++) {
+            Record storage r = patientRecords[_patient][i];
+            ids[i] = r.recordId;
+            authors[i] = r.author;
+            ipfsCids[i] = r.ipfsCid;
+            timestamps[i] = r.timestamp;
+            metaHashes[i] = r.metaHash;
+            requiredTypes[i] = doctorTypeToString(r.requiredType);
+        }
+    }
+    function getDoctorType(address doctor) external view returns (string memory) {
+        require(isDoctor[doctor], "Not a doctor");
+        return doctorTypeToString(doctorType[doctor]);
+}
+}
